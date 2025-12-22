@@ -8,8 +8,11 @@ import requests
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+SORARE_API = "https://api.sorare.com/graphql"
+SEEN_FILE = "seen.json"
+
 # ======================
-# PLAYERS (slug : name)
+# PLAYERS (slug : display name)
 # ======================
 PLAYERS = {
     "tyrese-maxey": "Tyrese Maxey",
@@ -17,38 +20,58 @@ PLAYERS = {
     "giannis-antetokounmpo": "Giannis Antetokounmpo",
     "pascal-siakam": "Pascal Siakam",
     "cade-cunningham": "Cade Cunningham",
-}
 
-SEEN_FILE = "seen.json"
+    "tyler-herro": "Tyler Herro",
+    "jalen-johnson": "Jalen Johnson",
+    "jalen-williams": "Jalen Williams",
+    "paolo-banchero": "Paolo Banchero",
+    "keyonte-george": "Keyonte George",
+    "devin-booker": "Devin Booker",
+    "matas-buzelis": "Matas Buzelis",
+}
 
 # ======================
 # HELPERS
 # ======================
 def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+    requests.post(url, data={
+        "chat_id": CHAT_ID,
+        "text": text,
+        "disable_web_page_preview": True
+    })
 
 def load_seen():
     if not os.path.exists(SEEN_FILE):
         return {}
-    with open(SEEN_FILE, "r") as f:
-        return json.load(f)
+    try:
+        with open(SEEN_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {}
 
-def save_seen(data):
+def save_seen(seen):
     with open(SEEN_FILE, "w") as f:
-        json.dump(data, f)
+        json.dump(seen, f)
 
 # ======================
 # SORARE API
 # ======================
 def fetch_cards(slug):
+    # LIMITED + Classic/In-Season ayrımı için season alanını da alıyoruz
     query = """
     query PlayerCards($slug: String!) {
       player(slug: $slug) {
-        cards(rarities: [limited], first: 5) {
+        cards(
+          rarities: [limited]
+          first: 20
+          orderBy: PRICE_ASC
+        ) {
           nodes {
+            id
             slug
             price
+            season
           }
         }
       }
@@ -56,7 +79,7 @@ def fetch_cards(slug):
     """
 
     r = requests.post(
-        "https://api.sorare.com/graphql",
+        SORARE_API,
         json={"query": query, "variables": {"slug": slug}},
         headers={"Content-Type": "application/json"},
         timeout=20
@@ -70,40 +93,47 @@ def fetch_cards(slug):
     return data["data"]["player"]["cards"]["nodes"]
 
 # ======================
-# MAIN LOGIC
+# MAIN
 # ======================
 def run():
-    send_message("🟢 Sorare NBA LIMITED price checker başladı (DENEME MODU)")
-
     seen = load_seen()
+    send_message("🟢 Sorare NBA LIMITED price checker başladı")
 
     for slug, name in PLAYERS.items():
         cards = fetch_cards(slug)
-
-        if len(cards) < 2:
+        if not cards:
             continue
 
-        cheapest = cards[0]
-        second = cards[1]
+        # Classic / In-Season ayrı ayrı grupla
+        by_season = {}
+        for c in cards:
+            if c["price"] is None or c["season"] is None:
+                continue
+            by_season.setdefault(c["season"], []).append(c)
 
-        card_id = cheapest["slug"]
-        price = cheapest["price"]
-        floor = second["price"]
+        for season, season_cards in by_season.items():
+            # Fiyata göre sırala
+            season_cards = sorted(season_cards, key=lambda x: float(x["price"]))
+            if len(season_cards) < 2:
+                continue
 
-        if price is None or floor is None:
-            continue
+            cheapest = season_cards[0]
+            floor = season_cards[1]
 
-        # GERÇEK ALARM ŞARTI
-        if price < floor and card_id not in seen:
-            send_message(
-                f"🔥 UNDER FLOOR LIMITED ALERT\n\n"
-                f"🏀 {name}\n"
-                f"💰 New price: {price} USD\n"
-                f"📉 Current floor: {floor} USD\n\n"
-                f"🔗 https://sorare.com/nba/cards/{card_id}"
-            )
+            price = float(cheapest["price"])
+            floor_price = float(floor["price"])
 
-            seen[card_id] = True
+            card_key = cheapest["id"]  # aynı karta 1 kez alarm
+
+            if price < floor_price and card_key not in seen:
+                send_message(
+                    f"🔥 UNDER FLOOR LIMITED ({season})\n\n"
+                    f"👤 {name}\n"
+                    f"💰 New price: {price:.2f} USD\n"
+                    f"📉 {season} floor: {floor_price:.2f} USD\n\n"
+                    f"🔗 https://sorare.com/nba/cards/{cheapest['slug']}"
+                )
+                seen[card_key] = True
 
     save_seen(seen)
 
