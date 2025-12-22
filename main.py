@@ -1,9 +1,11 @@
 import os
 import requests
+import time
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
+# slug : görünen isim
 PLAYERS = {
     "tyrese-maxey": "Tyrese Maxey",
     "shai-gilgeous-alexander": "Shai Gilgeous-Alexander",
@@ -14,19 +16,19 @@ PLAYERS = {
 
 SORARE_API = "https://api.sorare.com/graphql"
 
+
 def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+
 
 def fetch_cards(slug):
     query = """
     query PlayerCards($slug: String!) {
       player(slug: $slug) {
-        cards(rarities: [limited], first: 20, orderBy: PRICE_ASC) {
+        cards(first: 10, rarities: [limited], orderBy: PRICE_ASC) {
           nodes {
-            id
             slug
-            rarity
             price
           }
         }
@@ -44,10 +46,11 @@ def fetch_cards(slug):
     data = r.json()
 
     if "data" not in data or data["data"]["player"] is None:
-        print(f"❌ API error for {slug}: {data}")
+        print(f"API error for {slug}: {data}")
         return []
 
     return data["data"]["player"]["cards"]["nodes"]
+
 
 def run():
     send_message("🟢 Sorare NBA LIMITED price checker başladı")
@@ -61,15 +64,16 @@ def run():
         cheapest = cards[0]
         second = cards[1]
 
+        if cheapest["price"] < second["price"]:
+            send_message(
+                f"🔥 UNDER FLOOR LIMITED ALERT\n"
+                f"👤 {name}\n"
+                f"💰 New price: {cheapest['price']} USD\n"
+                f"📉 Current floor: {second['price']} USD\n"
+                f"🔗 https://sorare.com/nba/cards/{cheapest['slug']}"
+            )
 
-    if cheapest["price"] < second["price"]:
-    send_message(
-        f"🔥 UNDER FLOOR LIMITED ALERT\n\n"
-        f"🏀 {name}\n"
-        f"💰 New price: {cheapest['price']} USD\n"
-        f"📉 Current floor: {second['price']} USD\n"
-        f"🔗 https://sorare.com/nba/cards/{cheapest['slug']}"
-    )
+        time.sleep(1)
 
 
 if __name__ == "__main__":
