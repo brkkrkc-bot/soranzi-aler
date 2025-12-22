@@ -61,4 +61,5 @@ def run():
         cheapest = cards[0]
         second = cards[1]
 
-        if cheapest["price"] < second["]()
+if cheapest["price"] < second["price"]:
+
