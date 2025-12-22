@@ -61,5 +61,16 @@ def run():
         cheapest = cards[0]
         second = cards[1]
 
-if cheapest["price"] < second["price"]:
 
+    if cheapest["price"] < second["price"]:
+    send_message(
+        f"🔥 UNDER FLOOR LIMITED ALERT\n\n"
+        f"🏀 {name}\n"
+        f"💰 New price: {cheapest['price']} USD\n"
+        f"📉 Current floor: {second['price']} USD\n"
+        f"🔗 https://sorare.com/nba/cards/{cheapest['slug']}"
+    )
+
+
+if __name__ == "__main__":
+    run()
