@@ -2,31 +2,42 @@ import os
 import json
 import time
 import requests
+from datetime import datetime
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
+# ================== AYARLAR ==================
 
-SEEN_FILE = "seen.json"
-
-PLAYERS = [
-    "Tyler Herro",
-    "Jalen Johnson",
-    "Jalen Williams",
-    "Paolo Banchero",
-    "Keyonte George",
-    "Devin Booker",
-    "Matas Buzelis",
-    "Jaren Jackson Jr."
-]
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 SORARE_API = "https://api.sorare.com/graphql"
 
+PLAYERS = {
+    "jaren-jackson-jr": "Jaren Jackson Jr",
+    "tyler-herro": "Tyler Herro",
+    "jalen-johnson": "Jalen Johnson",
+    "jalen-williams": "Jalen Williams",
+    "paolo-banchero": "Paolo Banchero",
+    "keyonte-george": "Keyonte George",
+    "devin-booker": "Devin Booker",
+    "matas-buzelis": "Matas Buzelis",
+}
+
+SEEN_FILE = "seen.json"
+
+# ================== TELEGRAM ==================
 
 def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    r = requests.post(url, json={"chat_id": CHAT_ID, "text": text})
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    r = requests.post(url, json=payload, timeout=15)
     r.raise_for_status()
 
+# ================== DOSYA ==================
 
 def load_seen():
     if os.path.exists(SEEN_FILE):
@@ -34,120 +45,98 @@ def load_seen():
             return json.load(f)
     return {}
 
-
 def save_seen(data):
     with open(SEEN_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+# ================== SORARE ==================
 
-def fetch_market(player):
-    query = {
-        "query": """
-        query Market($name: String!) {
-          nbaCards(
-            first: 50
-            rarities: [limited]
-            playerName: $name
-            onSale: true
-          ) {
-            nodes {
-              slug
-              season
-              sale {
-                id
-                price {
-                  usd
-                }
-              }
-            }
+def fetch_market(slug):
+    query = """
+    query PlayerCards($slug: String!) {
+      player(slug: $slug) {
+        cards(rarities: [limited], onSale: true, first: 50) {
+          nodes {
+            slug
+            serialNumber
+            season
+            inSeasonEligible
+            priceUsd
           }
         }
-        """,
-        "variables": {"name": player},
+      }
+    }
+    """
+
+    payload = {
+        "query": query,
+        "variables": {"slug": slug}
     }
 
-    r = requests.post(SORARE_API, json=query)
+    r = requests.post(SORARE_API, json=payload, timeout=20)
     r.raise_for_status()
-    return r.json()["data"]["nbaCards"]["nodes"]
+    data = r.json()
 
+    if "errors" in data:
+        return []
+
+    return data["data"]["player"]["cards"]["nodes"]
+
+# ================== ANA LOGIC ==================
 
 def run():
-    send_message("🟢 Sorare NBA LIMITED price checker başladı")
+    send_message("🟢 <b>Sorare NBA LIMITED price checker başladı</b>")
 
     seen = load_seen()
-    updated = False
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    for player in PLAYERS:
-        cards = fetch_market(player)
+    for slug, name in PLAYERS.items():
+        cards = fetch_market(slug)
+        if not cards:
+            continue
 
-        grouped = {"in_season": [], "classic": []}
+        # in-season ve classic AYRI
+        for mode in ["in", "classic"]:
+            filtered = []
+            for c in cards:
+                if mode == "in" and c["inSeasonEligible"]:
+                    filtered.append(c)
+                if mode == "classic" and not c["inSeasonEligible"]:
+                    filtered.append(c)
 
-        for c in cards:
-            if not c["sale"]:
+            if len(filtered) < 1:
                 continue
 
-            price = float(c["sale"]["price"]["usd"])
-            season = "in_season" if c["season"] == "IN_SEASON" else "classic"
+            filtered.sort(key=lambda x: float(x["priceUsd"]))
+            floor = float(filtered[0]["priceUsd"])
 
-            grouped[season].append({
-                "sale_id": c["sale"]["id"],
-                "price": price,
-                "slug": c["slug"]
-            })
+            for c in filtered:
+                card_id = c["slug"]
+                price = float(c["priceUsd"])
 
-        for season, items in grouped.items():
-            if not items:
-                continue
+                key = f"{card_id}"
 
-            floor = min(i["price"] for i in items)
-
-            for item in items:
-                sid = item["sale_id"]
-                price = item["price"]
+                if key in seen and seen[key] == price:
+                    continue  # spam yok
 
                 diff_pct = ((price - floor) / floor) * 100
 
-                # YENİ KART
-                if sid not in seen:
-                    msg = (
-                        f"🆕 Yeni kart listelendi\n"
-                        f"👤 {player}\n"
-                        f"🟡 {'In-Season' if season=='in_season' else 'Classic'} LIMITED\n"
-                        f"💰 ${price:.2f}\n"
-                        f"📊 Floor: ${floor:.2f}\n"
-                        f"{'📉' if diff_pct < 0 else '📈'} "
-                        f"Floor’a göre %{diff_pct:.1f}"
-                    )
-                    send_message(msg)
+                emoji = "🆕" if key not in seen else "📉"
 
-                    seen[sid] = {
-                        "price": price,
-                        "player": player,
-                        "season": season
-                    }
-                    updated = True
-                    continue
+                send_message(
+                    f"{emoji} <b>{name}</b>\n"
+                    f"🎴 {'IN-SEASON' if mode=='in' else 'CLASSIC'}\n"
+                    f"💰 Fiyat: <b>${price:.2f}</b>\n"
+                    f"📊 Floor farkı: <b>{diff_pct:+.1f}%</b>\n"
+                    f"🔗 https://sorare.com/nba/cards/{card_id}\n"
+                    f"🕒 {now}"
+                )
 
-                # AYNI KART – FİYAT DÜŞÜŞÜ
-                old_price = seen[sid]["price"]
-                if price < old_price:
-                    change = ((price - old_price) / old_price) * 100
-                    msg = (
-                        f"🔻 Fiyat düştü\n"
-                        f"👤 {player}\n"
-                        f"🟡 {'In-Season' if season=='in_season' else 'Classic'} LIMITED\n"
-                        f"💰 ${old_price:.2f} → ${price:.2f}\n"
-                        f"📉 Değişim: %{change:.1f}\n"
-                        f"📊 Güncel floor: ${floor:.2f}"
-                    )
-                    send_message(msg)
+                seen[key] = price
 
-                    seen[sid]["price"] = price
-                    updated = True
+    save_seen(seen)
 
-    if updated:
-        save_seen(seen)
-
+# ================== ÇALIŞTIR ==================
 
 if __name__ == "__main__":
     run()
