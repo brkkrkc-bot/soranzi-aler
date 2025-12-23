@@ -3,8 +3,8 @@ import requests
 import json
 from datetime import datetime
 
-# ================== CONFIG ==================
-SORARE_API = "https://api.sorare.com/graphql"
+API = "https://api.sorare.com/graphql"
+
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
@@ -16,13 +16,11 @@ PLAYERS = {
 }
 
 STATE_FILE = "seen.json"
-# ============================================
 
 
-def send_message(text):
+def send(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
-    r = requests.post(url, json=payload, timeout=10)
+    r = requests.post(url, json={"chat_id": CHAT_ID, "text": msg}, timeout=10)
     r.raise_for_status()
 
 
@@ -33,87 +31,72 @@ def load_state():
     return {}
 
 
-def save_state(state):
+def save_state(s):
     with open(STATE_FILE, "w") as f:
-        json.dump(state, f, indent=2)
+        json.dump(s, f, indent=2)
 
 
-def fetch_market(player_slug):
+def fetch_market(slug):
     query = """
     query Market($slug: String!) {
-      basketballPlayer(slug: $slug) {
-        cards(rarities: [limited], seasons: [IN_SEASON], first: 20) {
-          nodes {
-            slug
-            serialNumber
-            season
-            liveSingleSaleOffer {
-              price
-            }
-          }
+      marketCards(
+        sport: BASKETBALL,
+        rarity: limited,
+        season: IN_SEASON,
+        playerSlug: $slug,
+        first: 20
+      ) {
+        nodes {
+          id
+          serialNumber
+          price
         }
       }
     }
     """
 
-    variables = {"slug": player_slug}
-
     r = requests.post(
-        SORARE_API,
-        json={"query": query, "variables": variables},
+        API,
+        json={"query": query, "variables": {"slug": slug}},
         headers={"Content-Type": "application/json"},
         timeout=15,
     )
     r.raise_for_status()
-    data = r.json()
-
-    return data["data"]["basketballPlayer"]["cards"]["nodes"]
+    return r.json()["data"]["marketCards"]["nodes"]
 
 
 def run():
     state = load_state()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = datetime.now().strftime("%H:%M")
 
     for slug, name in PLAYERS.items():
         cards = fetch_market(slug)
-
-        prices = [
-            float(c["liveSingleSaleOffer"]["price"])
-            for c in cards
-            if c["liveSingleSaleOffer"]
-        ]
-
-        if not prices:
+        if not cards:
             continue
 
+        prices = [float(c["price"]) for c in cards]
         floor = min(prices)
 
         for c in cards:
-            offer = c["liveSingleSaleOffer"]
-            if not offer:
-                continue
+            card_id = c["id"]
+            price = float(c["price"])
+            last = state.get(card_id)
 
-            price = float(offer["price"])
-            card_id = c["slug"]
+            diff = ((price - floor) / floor) * 100
 
-            last_price = state.get(card_id)
-            diff_pct = ((price - floor) / floor) * 100
-
-            # 🔔 YENİ KART veya FİYAT DEĞİŞİMİ
-            if last_price is None or price < last_price:
-                msg = (
+            if last is None or price < last:
+                send(
                     f"🆕 {name} (IN-SEASON)\n"
-                    f"💰 Fiyat: ${price:.2f}\n"
-                    f"📉 Floor farkı: {diff_pct:+.1f}%\n"
+                    f"💰 ${price:.2f}\n"
+                    f"📉 Floor farkı: {diff:+.1f}%\n"
                     f"🔢 Serial: {c['serialNumber']}\n"
                     f"🕒 {now}"
                 )
-                send_message(msg)
                 state[card_id] = price
 
     save_state(state)
 
 
 if __name__ == "__main__":
-    send_message("🟢 Sorare NBA LIMITED price checker başladı")
+    send("🟢 Sorare NBA LIMITED price checker başladı")
     run()
