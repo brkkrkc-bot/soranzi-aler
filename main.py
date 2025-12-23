@@ -1,14 +1,12 @@
 import requests
 import os
 import json
-import time
 from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
 SORARE_API = "https://api.sorare.com/graphql"
-
 STATE_FILE = "state.json"
 
 PLAYERS = {
@@ -23,9 +21,7 @@ PLAYERS = {
 
 def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
-    r = requests.post(url, json=payload, timeout=20)
-    r.raise_for_status()
+    requests.post(url, json={"chat_id": CHAT_ID, "text": text}, timeout=20)
 
 def load_state():
     if not os.path.exists(STATE_FILE):
@@ -39,8 +35,8 @@ def save_state(state):
 
 def fetch_market(slug):
     query = """
-    query PlayerCards($slug: String!) {
-      player(slug: $slug) {
+    query NBAPlayerCards($slug: String!) {
+      nbaPlayer(slug: $slug) {
         cards(rarities: [limited], onSale: true, first: 50) {
           nodes {
             slug
@@ -69,17 +65,17 @@ def fetch_market(slug):
     r.raise_for_status()
     data = r.json()
 
-    if "errors" in data or data["data"]["player"] is None:
+    if not data.get("data") or not data["data"].get("nbaPlayer"):
         return []
 
-    return data["data"]["player"]["cards"]["nodes"]
+    return data["data"]["nbaPlayer"]["cards"]["nodes"]
 
 def run():
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     send_message("🟢 Sorare NBA LIMITED price checker başladı")
 
     state = load_state()
-    something_sent = False
+    sent = False
 
     for slug, name in PLAYERS.items():
         cards = fetch_market(slug)
@@ -89,51 +85,44 @@ def run():
             continue
 
         in_season.sort(key=lambda x: x["priceUsd"])
-        floor = in_season[0]["priceUsd"]
+        floor = round(in_season[0]["priceUsd"], 2)
 
         for c in in_season:
-            card_id = c["slug"]
+            cid = c["slug"]
             price = round(c["priceUsd"], 2)
-
-            old_price = state.get(card_id)
+            old = state.get(cid)
 
             diff_pct = round(((price - floor) / floor) * 100, 1)
 
-            # 🆕 yeni kart
-            if old_price is None:
-                msg = (
+            if old is None:
+                send_message(
                     f"🆕 YENİ IN-SEASON KART\n"
                     f"{name}\n"
-                    f"Serial: #{c['serialNumber']}\n"
+                    f"Serial #{c['serialNumber']}\n"
                     f"Fiyat: ${price}\n"
                     f"Floor: ${floor}\n"
                     f"Fark: {diff_pct:+}%"
                 )
-                send_message(msg)
-                state[card_id] = price
-                something_sent = True
+                state[cid] = price
+                sent = True
 
-            # 🔻 fiyat düşüşü
-            elif price < old_price:
-                drop_pct = round(((price - old_price) / old_price) * 100, 1)
-                msg = (
+            elif price < old:
+                drop = round(((price - old) / old) * 100, 1)
+                send_message(
                     f"🔻 FİYAT DÜŞTÜ\n"
                     f"{name}\n"
-                    f"Serial: #{c['serialNumber']}\n"
-                    f"Eski: ${old_price}\n"
-                    f"Yeni: ${price} ({drop_pct}%)\n"
-                    f"Floor: ${floor}\n"
+                    f"Serial #{c['serialNumber']}\n"
+                    f"{old}$ → {price}$ ({drop}%)\n"
                     f"Floor farkı: {diff_pct:+}%"
                 )
-                send_message(msg)
-                state[card_id] = price
-                something_sent = True
+                state[cid] = price
+                sent = True
 
-    if not something_sent:
+    if not sent:
         send_message(
             f"✅ Sorare NBA checker aktif\n"
             f"{now}\n"
-            f"📊 Bugün floor altı / yeni kart yok"
+            f"📊 Yeni kart / fiyat düşüşü yok"
         )
 
     save_state(state)
