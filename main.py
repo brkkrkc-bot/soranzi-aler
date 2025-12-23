@@ -44,7 +44,7 @@ def fetch_market(slug):
       nbaCards(
         first: 50
         filter: {
-          playerSlugs: [$slug]
+          players: [{ slug: $slug }]
           rarities: [limited]
           onSale: true
         }
@@ -68,6 +68,7 @@ def fetch_market(slug):
         json={"query": query, "variables": {"slug": slug}},
         timeout=20
     )
+
     r.raise_for_status()
     return r.json()["data"]["nbaCards"]["nodes"]
 
@@ -79,45 +80,31 @@ def run():
     for slug, name in PLAYERS.items():
         cards = fetch_market(slug)
 
-        for season_type in ["in-season", "classic"]:
-            filtered = []
+        if not cards:
+            continue
 
-            for c in cards:
-                price = c["liveSingleSaleOffer"]["price"]
-                year = c["season"]["startYear"]
+        floor = min(c["liveSingleSaleOffer"]["price"] for c in cards)
 
-                if season_type == "in-season" and year == 2024:
-                    filtered.append((c, price))
-                if season_type == "classic" and year != 2024:
-                    filtered.append((c, price))
+        for c in cards:
+            price = c["liveSingleSaleOffer"]["price"]
+            key = c["slug"]
 
-            if not filtered:
+            if state.get(key) == price:
                 continue
 
-            floor = min(p for _, p in filtered)
+            diff = ((price - floor) / floor) * 100
+            emoji = "🟢" if diff <= 0 else "🔴"
 
-            for c, price in filtered:
-                key = c["slug"]
-                old = state.get(key)
+            send(
+                f"{emoji} {name}\n"
+                f"💰 {price:.2f}$\n"
+                f"📊 Floor farkı: {diff:+.1f}%"
+            )
 
-                if old == price:
-                    continue
-
-                diff = ((price - floor) / floor) * 100
-                emoji = "🟢" if diff <= 0 else "🔴"
-
-                send(
-                    f"{emoji} {name}\n"
-                    f"{season_type.upper()}\n"
-                    f"💰 {price:.2f}$\n"
-                    f"📊 Floor farkı: {diff:+.1f}%"
-                )
-
-                state[key] = price
+            state[key] = price
 
     save_state(state)
 
 
 if __name__ == "__main__":
     run()
-    
