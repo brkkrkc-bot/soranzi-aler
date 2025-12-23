@@ -38,18 +38,21 @@ def save_state(s):
 
 def fetch_market(slug):
     query = """
-    query Market($slug: String!) {
-      marketCards(
-        sport: BASKETBALL,
-        rarity: limited,
-        season: IN_SEASON,
-        playerSlug: $slug,
-        first: 20
-      ) {
+    query PlayerCards($slug: String!) {
+      basketballPlayers(slugs: [$slug]) {
         nodes {
-          id
-          serialNumber
-          price
+          cards(
+            first: 20,
+            rarities: [limited],
+            seasons: [IN_SEASON],
+            onSale: true
+          ) {
+            nodes {
+              id
+              serialNumber
+              price
+            }
+          }
         }
       }
     }
@@ -62,7 +65,12 @@ def fetch_market(slug):
         timeout=15,
     )
     r.raise_for_status()
-    return r.json()["data"]["marketCards"]["nodes"]
+
+    players = r.json()["data"]["basketballPlayers"]["nodes"]
+    if not players:
+        return []
+
+    return players[0]["cards"]["nodes"]
 
 
 def run():
@@ -88,7 +96,7 @@ def run():
                 send(
                     f"🆕 {name} (IN-SEASON)\n"
                     f"💰 ${price:.2f}\n"
-                    f"📉 Floor farkı: {diff:+.1f}%\n"
+                    f"📊 Floor farkı: {diff:+.1f}%\n"
                     f"🔢 Serial: {c['serialNumber']}\n"
                     f"🕒 {now}"
                 )
