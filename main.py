@@ -1,110 +1,124 @@
 import requests
-import os
 import json
+import os
+from datetime import datetime
 
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 GRAPHQL_URL = "https://api.sorare.com/graphql"
-STATE_FILE = "state.json"
-
-PLAYERS = {
-    "jaren-jackson-jr": "Jaren Jackson Jr",
-}
 
 HEADERS = {
     "Content-Type": "application/json",
     "User-Agent": "Mozilla/5.0"
 }
 
+def send_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text}
+    requests.post(url, json=payload, timeout=10)
 
-def send(msg):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": CHAT_ID, "text": msg},
-        timeout=10
-    )
+def load_json(path, default):
+    if not os.path.exists(path):
+        return default
+    with open(path, "r") as f:
+        return json.load(f)
 
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
-
-
-def fetch_market(slug):
+def fetch_market(player_slug):
     query = """
-    query Market($slug: String!) {
-      nbaCards(
-        first: 50
-        filter: {
-          players: [{ slug: $slug }]
-          rarities: [limited]
-          onSale: true
-        }
-      ) {
-        nodes {
-          slug
-          season {
-            startYear
-          }
-          liveSingleSaleOffer {
-            price
+    query Cards($slug: String!) {
+      nbaPlayer(slug: $slug) {
+        displayName
+        cards(rarities: [limited], onSale: true, first: 20) {
+          nodes {
+            slug
+            season {
+              startYear
+            }
+            currentPrice
           }
         }
       }
     }
     """
-
+    variables = {"slug": player_slug}
     r = requests.post(
         GRAPHQL_URL,
+        json={"query": query, "variables": variables},
         headers=HEADERS,
-        json={"query": query, "variables": {"slug": slug}},
-        timeout=20
+        timeout=15
     )
-
     r.raise_for_status()
-    return r.json()["data"]["nbaCards"]["nodes"]
-
+    return r.json()["data"]["nbaPlayer"]
 
 def run():
-    state = load_state()
-    send("🟢 Sorare NBA LIMITED checker başladı")
+    players = load_json("players.json", {})["players"]
+    seen = load_json("seen.json", {})
+    status = load_json("status.json", {})
 
-    for slug, name in PLAYERS.items():
-        cards = fetch_market(slug)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    send_message("🟢 Sorare NBA LIMITED price checker başladı")
+
+    for slug in players:
+        data = fetch_market(slug)
+        if not data:
+            continue
+
+        name = data["displayName"]
+        cards = data["cards"]["nodes"]
         if not cards:
             continue
 
-        floor = min(c["liveSingleSaleOffer"]["price"] for c in cards)
+        prices = [c["currentPrice"] for c in cards if c["currentPrice"]]
+        if not prices:
+            continue
+
+        floor = min(prices)
 
         for c in cards:
-            price = c["liveSingleSaleOffer"]["price"]
-            key = c["slug"]
+            card_slug = c["slug"]
+            price = c["currentPrice"]
+            season = c["season"]["startYear"]
+            is_in_season = season == datetime.now().year
 
-            if state.get(key) == price:
-                continue
+            key = f"{card_slug}"
 
-            diff = ((price - floor) / floor) * 100
-            emoji = "🟢" if diff <= 0 else "🔴"
+            prev_price = seen.get(key)
 
-            send(
-                f"{emoji} {name}\n"
-                f"💰 {price:.2f}$\n"
-                f"📊 Floor farkı: {diff:+.1f}%"
-            )
+            diff_pct = round(((price - floor) / floor) * 100, 2)
 
-            state[key] = price
+            alert = False
+            reason = ""
 
-    save_state(state)
+            if key not in seen:
+                alert = True
+                reason = "🆕 Yeni kart"
+            elif price < prev_price:
+                alert = True
+                reason = "📉 Fiyat düştü"
 
+            if alert:
+                season_tag = "IN-SEASON" if is_in_season else "CLASSIC"
+                msg = (
+                    f"🏀 {name}\n"
+                    f"{reason}\n"
+                    f"💳 {season_tag} LIMITED\n"
+                    f"💰 Fiyat: ${price:.2f}\n"
+                    f"📊 Floor: ${floor:.2f}\n"
+                    f"📈 Fark: %{diff_pct}\n"
+                    f"🕒 {now}"
+                )
+                send_message(msg)
+
+            seen[key] = price
+
+    save_json("seen.json", seen)
+    save_json("status.json", {"last_run": now})
 
 if __name__ == "__main__":
     run()
