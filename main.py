@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -25,8 +26,7 @@ SEEN_FILE = "seen.json"
 def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text}
-    r = requests.post(url, json=payload, timeout=10)
-    r.raise_for_status()
+    requests.post(url, json=payload, timeout=10)
 
 
 def load_seen():
@@ -67,7 +67,6 @@ def fetch_floor(player_name, season_type):
     }
 
     r = requests.post(SORARE_API, json=query, timeout=15)
-    r.raise_for_status()
     cards = r.json().get("data", {}).get("cards", {}).get("nodes", [])
 
     if not cards:
@@ -80,10 +79,10 @@ def fetch_floor(player_name, season_type):
 
 
 def run():
-    send_message("🟢 Sorare NBA LIMITED price checker başladı")
+    today = datetime.utcnow().strftime("%Y-%m-%d")
 
     seen = load_seen()
-    changed = False
+    alerts_sent_today = False
 
     for player in PLAYERS:
         for season, label in [("CLASSIC", "Classic"), ("IN_SEASON", "In-Season")]:
@@ -102,30 +101,30 @@ def run():
             else:
                 drop_percent = 0
 
-            if old_price is None or drop_percent >= PERCENT_DROP_ALERT:
-                if old_price:
-                    msg = (
-                        f"🔥 %{drop_percent:.1f} DROP\n"
-                        f"👤 {player}\n"
-                        f"🎴 {label}\n"
-                        f"💵 {new_price} USD (önce {old_price})\n"
-                        f"🔗 https://sorare.com/cards/{slug}"
-                    )
-                else:
-                    msg = (
-                        f"🆕 FIRST FLOOR\n"
-                        f"👤 {player}\n"
-                        f"🎴 {label}\n"
-                        f"💵 {new_price} USD\n"
-                        f"🔗 https://sorare.com/cards/{slug}"
-                    )
-
-                send_message(msg)
+            if old_price and drop_percent >= PERCENT_DROP_ALERT:
+                send_message(
+                    f"🔥 %{drop_percent:.1f} DROP\n"
+                    f"👤 {player}\n"
+                    f"🎴 {label}\n"
+                    f"💵 {new_price} USD (önce {old_price})\n"
+                    f"🔗 https://sorare.com/cards/{slug}"
+                )
+                alerts_sent_today = True
                 seen[key] = new_price
-                changed = True
 
-    if changed:
-        save_seen(seen)
+            elif old_price is None:
+                seen[key] = new_price
+
+    # 🔔 GÜNLÜK STATUS
+    if seen.get("_last_status_date") != today and not alerts_sent_today:
+        send_message(
+            f"✅ Sorare NBA checker aktif\n"
+            f"📅 {today}\n"
+            f"📊 Bugün floor altı kart yok"
+        )
+        seen["_last_status_date"] = today
+
+    save_seen(seen)
 
 
 if __name__ == "__main__":
