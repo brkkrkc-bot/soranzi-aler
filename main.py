@@ -20,20 +20,17 @@ STATE_FILE = "seen.json"
 
 def send(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    r = requests.post(url, json={"chat_id": CHAT_ID, "text": msg}, timeout=10)
-    r.raise_for_status()
+    requests.post(url, json={"chat_id": CHAT_ID, "text": msg}, timeout=10)
 
 
 def load_state():
     if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
+        return json.load(open(STATE_FILE))
     return {}
 
 
 def save_state(s):
-    with open(STATE_FILE, "w") as f:
-        json.dump(s, f, indent=2)
+    json.dump(s, open(STATE_FILE, "w"), indent=2)
 
 
 def fetch_market(slug):
@@ -41,12 +38,7 @@ def fetch_market(slug):
     query PlayerCards($slug: String!) {
       basketballPlayers(slugs: [$slug]) {
         nodes {
-          cards(
-            first: 20,
-            rarities: [limited],
-            seasons: [IN_SEASON],
-            onSale: true
-          ) {
+          cards(first: 20, rarities: [limited], onSale: true) {
             nodes {
               id
               serialNumber
@@ -86,21 +78,21 @@ def run():
         floor = min(prices)
 
         for c in cards:
-            card_id = c["id"]
+            cid = c["id"]
             price = float(c["price"])
-            last = state.get(card_id)
+            last = state.get(cid)
 
             diff = ((price - floor) / floor) * 100
 
             if last is None or price < last:
                 send(
-                    f"🆕 {name} (IN-SEASON)\n"
+                    f"🆕 {name}\n"
                     f"💰 ${price:.2f}\n"
                     f"📊 Floor farkı: {diff:+.1f}%\n"
                     f"🔢 Serial: {c['serialNumber']}\n"
                     f"🕒 {now}"
                 )
-                state[card_id] = price
+                state[cid] = price
 
     save_state(state)
 
