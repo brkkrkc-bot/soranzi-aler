@@ -1,16 +1,15 @@
 import requests
 import os
 import json
-from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
 GRAPHQL_URL = "https://api.sorare.com/graphql"
+STATE_FILE = "state.json"
 
 PLAYERS = {
     "jaren-jackson-jr": "Jaren Jackson Jr",
-    # buraya istediğin oyuncuyu ekle
 }
 
 HEADERS = {
@@ -18,12 +17,13 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
-STATE_FILE = "state.json"
-
 
 def send(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
+    requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        json={"chat_id": CHAT_ID, "text": msg},
+        timeout=10
+    )
 
 
 def load_state():
@@ -41,19 +41,27 @@ def save_state(state):
 def fetch_market(slug):
     query = """
     query Market($slug: String!) {
-      nbaPlayer(slug: $slug) {
-        name
-        cards(rarities: [limited], first: 50) {
-          nodes {
-            slug
-            season
-            onSale
+      nbaCards(
+        first: 50
+        filter: {
+          playerSlugs: [$slug]
+          rarities: [limited]
+          onSale: true
+        }
+      ) {
+        nodes {
+          slug
+          season {
+            startYear
+          }
+          liveSingleSaleOffer {
             price
           }
         }
       }
     }
     """
+
     r = requests.post(
         GRAPHQL_URL,
         headers=HEADERS,
@@ -61,49 +69,51 @@ def fetch_market(slug):
         timeout=20
     )
     r.raise_for_status()
-    return r.json()["data"]["nbaPlayer"]["cards"]["nodes"]
+    return r.json()["data"]["nbaCards"]["nodes"]
 
 
 def run():
     state = load_state()
-    today = datetime.now().strftime("%Y-%m-%d")
-
     send("🟢 Sorare NBA LIMITED checker başladı")
 
     for slug, name in PLAYERS.items():
         cards = fetch_market(slug)
 
         for season_type in ["in-season", "classic"]:
-            filtered = [
-                c for c in cards
-                if c["onSale"]
-                and ((season_type == "in-season" and c["season"] == "2024")
-                     or (season_type == "classic" and c["season"] != "2024"))
-            ]
+            filtered = []
+
+            for c in cards:
+                price = c["liveSingleSaleOffer"]["price"]
+                year = c["season"]["startYear"]
+
+                if season_type == "in-season" and year == 2024:
+                    filtered.append((c, price))
+                if season_type == "classic" and year != 2024:
+                    filtered.append((c, price))
 
             if not filtered:
                 continue
 
-            floor = min(c["price"] for c in filtered)
+            floor = min(p for _, p in filtered)
 
-            for c in filtered:
-                key = f"{slug}-{c['slug']}"
-                old_price = state.get(key)
+            for c, price in filtered:
+                key = c["slug"]
+                old = state.get(key)
 
-                if old_price is not None and old_price == c["price"]:
+                if old == price:
                     continue
 
-                diff = ((c["price"] - floor) / floor) * 100
+                diff = ((price - floor) / floor) * 100
                 emoji = "🟢" if diff <= 0 else "🔴"
 
                 send(
                     f"{emoji} {name}\n"
                     f"{season_type.upper()}\n"
-                    f"💰 {c['price']:.2f}$\n"
+                    f"💰 {price:.2f}$\n"
                     f"📊 Floor farkı: {diff:+.1f}%"
                 )
 
-                state[key] = c["price"]
+                state[key] = price
 
     save_state(state)
 
