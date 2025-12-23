@@ -1,102 +1,112 @@
-import os
 import requests
+import os
 import json
 from datetime import datetime
-
-API = "https://api.sorare.com/graphql"
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["CHAT_ID"]
 
+GRAPHQL_URL = "https://api.sorare.com/graphql"
+
 PLAYERS = {
     "jaren-jackson-jr": "Jaren Jackson Jr",
-    "tyler-herro": "Tyler Herro",
-    "jalen-williams": "Jalen Williams",
-    "paolo-banchero": "Paolo Banchero",
+    # buraya istediğin oyuncuyu ekle
 }
 
-STATE_FILE = "seen.json"
+HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0"
+}
+
+STATE_FILE = "state.json"
 
 
 def send(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": msg}, timeout=10)
+    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
 
 
 def load_state():
     if os.path.exists(STATE_FILE):
-        return json.load(open(STATE_FILE))
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
     return {}
 
 
-def save_state(s):
-    json.dump(s, open(STATE_FILE, "w"), indent=2)
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
 
 
 def fetch_market(slug):
     query = """
-    query PlayerCards($slug: String!) {
-      basketballPlayers(slugs: [$slug]) {
-        nodes {
-          cards(first: 20, rarities: [limited], onSale: true) {
-            nodes {
-              id
-              serialNumber
-              price
-            }
+    query Market($slug: String!) {
+      nbaPlayer(slug: $slug) {
+        name
+        cards(rarities: [limited], first: 50) {
+          nodes {
+            slug
+            season
+            onSale
+            price
           }
         }
       }
     }
     """
-
     r = requests.post(
-        API,
+        GRAPHQL_URL,
+        headers=HEADERS,
         json={"query": query, "variables": {"slug": slug}},
-        headers={"Content-Type": "application/json"},
-        timeout=15,
+        timeout=20
     )
     r.raise_for_status()
-
-    players = r.json()["data"]["basketballPlayers"]["nodes"]
-    if not players:
-        return []
-
-    return players[0]["cards"]["nodes"]
+    return r.json()["data"]["nbaPlayer"]["cards"]["nodes"]
 
 
 def run():
     state = load_state()
-    now = datetime.now().strftime("%H:%M")
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    send("🟢 Sorare NBA LIMITED checker başladı")
 
     for slug, name in PLAYERS.items():
         cards = fetch_market(slug)
-        if not cards:
-            continue
 
-        prices = [float(c["price"]) for c in cards]
-        floor = min(prices)
+        for season_type in ["in-season", "classic"]:
+            filtered = [
+                c for c in cards
+                if c["onSale"]
+                and ((season_type == "in-season" and c["season"] == "2024")
+                     or (season_type == "classic" and c["season"] != "2024"))
+            ]
 
-        for c in cards:
-            cid = c["id"]
-            price = float(c["price"])
-            last = state.get(cid)
+            if not filtered:
+                continue
 
-            diff = ((price - floor) / floor) * 100
+            floor = min(c["price"] for c in filtered)
 
-            if last is None or price < last:
+            for c in filtered:
+                key = f"{slug}-{c['slug']}"
+                old_price = state.get(key)
+
+                if old_price is not None and old_price == c["price"]:
+                    continue
+
+                diff = ((c["price"] - floor) / floor) * 100
+                emoji = "🟢" if diff <= 0 else "🔴"
+
                 send(
-                    f"🆕 {name}\n"
-                    f"💰 ${price:.2f}\n"
-                    f"📊 Floor farkı: {diff:+.1f}%\n"
-                    f"🔢 Serial: {c['serialNumber']}\n"
-                    f"🕒 {now}"
+                    f"{emoji} {name}\n"
+                    f"{season_type.upper()}\n"
+                    f"💰 {c['price']:.2f}$\n"
+                    f"📊 Floor farkı: {diff:+.1f}%"
                 )
-                state[cid] = price
+
+                state[key] = c["price"]
 
     save_state(state)
 
 
 if __name__ == "__main__":
-    send("🟢 Sorare NBA LIMITED price checker başladı")
     run()
