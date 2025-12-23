@@ -1,16 +1,13 @@
 import os
 import json
 import requests
-from datetime import datetime
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-HEADERS = {
-    "Content-Type": "application/json"
-}
-
 SORARE_API = "https://api.sorare.com/graphql"
+
+PERCENT_DROP_ALERT = 5  # %5
 
 PLAYERS = [
     "Tyler Herro",
@@ -27,10 +24,7 @@ SEEN_FILE = "seen.json"
 
 def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text
-    }
+    payload = {"chat_id": CHAT_ID, "text": text}
     r = requests.post(url, json=payload, timeout=10)
     r.raise_for_status()
 
@@ -44,16 +38,17 @@ def load_seen():
 
 def save_seen(data):
     with open(SEEN_FILE, "w") as f:
-        json.dump(data, f)
+        json.dump(data, f, indent=2)
 
 
-def fetch_floor(player_name):
+def fetch_floor(player_name, season_type):
     query = {
         "query": """
-        query($name: String!) {
+        query($name: String!, $season: CardSeason!) {
           cards(
             sport: NBA
             rarity: limited
+            season: $season
             first: 1
             filter: { playerName: $name }
             sort: PRICE_ASC
@@ -66,15 +61,15 @@ def fetch_floor(player_name):
         }
         """,
         "variables": {
-            "name": player_name
+            "name": player_name,
+            "season": season_type
         }
     }
 
-    r = requests.post(SORARE_API, json=query, headers=HEADERS, timeout=15)
+    r = requests.post(SORARE_API, json=query, timeout=15)
     r.raise_for_status()
-    data = r.json()
+    cards = r.json().get("data", {}).get("cards", {}).get("nodes", [])
 
-    cards = data.get("data", {}).get("cards", {}).get("nodes", [])
     if not cards:
         return None
 
@@ -88,29 +83,48 @@ def run():
     send_message("🟢 Sorare NBA LIMITED price checker başladı")
 
     seen = load_seen()
-    updated = False
+    changed = False
 
     for player in PLAYERS:
-        result = fetch_floor(player)
-        if not result:
-            continue
+        for season, label in [("CLASSIC", "Classic"), ("IN_SEASON", "In-Season")]:
+            result = fetch_floor(player, season)
+            if not result:
+                continue
 
-        slug = result["slug"]
-        price = result["price"]
+            key = f"{player}_{label}"
+            new_price = result["price"]
+            slug = result["slug"]
 
-        last_price = seen.get(player)
+            old_price = seen.get(key)
 
-        if last_price is None or price < last_price:
-            send_message(
-                f"🔥 PRICE DROP\n"
-                f"👤 {player}\n"
-                f"💵 {price} USD\n"
-                f"🔗 https://sorare.com/cards/{slug}"
-            )
-            seen[player] = price
-            updated = True
+            if old_price:
+                drop_percent = ((old_price - new_price) / old_price) * 100
+            else:
+                drop_percent = 0
 
-    if updated:
+            if old_price is None or drop_percent >= PERCENT_DROP_ALERT:
+                if old_price:
+                    msg = (
+                        f"🔥 %{drop_percent:.1f} DROP\n"
+                        f"👤 {player}\n"
+                        f"🎴 {label}\n"
+                        f"💵 {new_price} USD (önce {old_price})\n"
+                        f"🔗 https://sorare.com/cards/{slug}"
+                    )
+                else:
+                    msg = (
+                        f"🆕 FIRST FLOOR\n"
+                        f"👤 {player}\n"
+                        f"🎴 {label}\n"
+                        f"💵 {new_price} USD\n"
+                        f"🔗 https://sorare.com/cards/{slug}"
+                    )
+
+                send_message(msg)
+                seen[key] = new_price
+                changed = True
+
+    if changed:
         save_seen(seen)
 
 
