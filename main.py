@@ -1,55 +1,41 @@
+import requests
 import os
 import json
 import time
-import requests
 from datetime import datetime
 
-# ================== AYARLAR ==================
-
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+CHAT_ID = os.environ["CHAT_ID"]
 
 SORARE_API = "https://api.sorare.com/graphql"
+
+STATE_FILE = "state.json"
 
 PLAYERS = {
     "jaren-jackson-jr": "Jaren Jackson Jr",
     "tyler-herro": "Tyler Herro",
-    "jalen-johnson": "Jalen Johnson",
     "jalen-williams": "Jalen Williams",
     "paolo-banchero": "Paolo Banchero",
-    "keyonte-george": "Keyonte George",
     "devin-booker": "Devin Booker",
-    "matas-buzelis": "Matas Buzelis",
+    "jalen-johnson": "Jalen Johnson",
+    "keyonte-george": "Keyonte George"
 }
-
-SEEN_FILE = "seen.json"
-
-# ================== TELEGRAM ==================
 
 def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    r = requests.post(url, json=payload, timeout=15)
+    payload = {"chat_id": CHAT_ID, "text": text}
+    r = requests.post(url, json=payload, timeout=20)
     r.raise_for_status()
 
-# ================== DOSYA ==================
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {}
+    with open(STATE_FILE, "r") as f:
+        return json.load(f)
 
-def load_seen():
-    if os.path.exists(SEEN_FILE):
-        with open(SEEN_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_seen(data):
-    with open(SEEN_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-# ================== SORARE ==================
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
 
 def fetch_market(slug):
     query = """
@@ -68,75 +54,89 @@ def fetch_market(slug):
     }
     """
 
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0"
+    }
+
     payload = {
         "query": query,
         "variables": {"slug": slug}
     }
 
-    r = requests.post(SORARE_API, json=payload, timeout=20)
+    r = requests.post(SORARE_API, json=payload, headers=headers, timeout=20)
     r.raise_for_status()
     data = r.json()
 
-    if "errors" in data:
+    if "errors" in data or data["data"]["player"] is None:
         return []
 
     return data["data"]["player"]["cards"]["nodes"]
 
-# ================== ANA LOGIC ==================
-
 def run():
-    send_message("🟢 <b>Sorare NBA LIMITED price checker başladı</b>")
-
-    seen = load_seen()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    send_message("🟢 Sorare NBA LIMITED price checker başladı")
+
+    state = load_state()
+    something_sent = False
 
     for slug, name in PLAYERS.items():
         cards = fetch_market(slug)
-        if not cards:
+        in_season = [c for c in cards if c["inSeasonEligible"] and c["priceUsd"]]
+
+        if not in_season:
             continue
 
-        # in-season ve classic AYRI
-        for mode in ["in", "classic"]:
-            filtered = []
-            for c in cards:
-                if mode == "in" and c["inSeasonEligible"]:
-                    filtered.append(c)
-                if mode == "classic" and not c["inSeasonEligible"]:
-                    filtered.append(c)
+        in_season.sort(key=lambda x: x["priceUsd"])
+        floor = in_season[0]["priceUsd"]
 
-            if len(filtered) < 1:
-                continue
+        for c in in_season:
+            card_id = c["slug"]
+            price = round(c["priceUsd"], 2)
 
-            filtered.sort(key=lambda x: float(x["priceUsd"]))
-            floor = float(filtered[0]["priceUsd"])
+            old_price = state.get(card_id)
 
-            for c in filtered:
-                card_id = c["slug"]
-                price = float(c["priceUsd"])
+            diff_pct = round(((price - floor) / floor) * 100, 1)
 
-                key = f"{card_id}"
-
-                if key in seen and seen[key] == price:
-                    continue  # spam yok
-
-                diff_pct = ((price - floor) / floor) * 100
-
-                emoji = "🆕" if key not in seen else "📉"
-
-                send_message(
-                    f"{emoji} <b>{name}</b>\n"
-                    f"🎴 {'IN-SEASON' if mode=='in' else 'CLASSIC'}\n"
-                    f"💰 Fiyat: <b>${price:.2f}</b>\n"
-                    f"📊 Floor farkı: <b>{diff_pct:+.1f}%</b>\n"
-                    f"🔗 https://sorare.com/nba/cards/{card_id}\n"
-                    f"🕒 {now}"
+            # 🆕 yeni kart
+            if old_price is None:
+                msg = (
+                    f"🆕 YENİ IN-SEASON KART\n"
+                    f"{name}\n"
+                    f"Serial: #{c['serialNumber']}\n"
+                    f"Fiyat: ${price}\n"
+                    f"Floor: ${floor}\n"
+                    f"Fark: {diff_pct:+}%"
                 )
+                send_message(msg)
+                state[card_id] = price
+                something_sent = True
 
-                seen[key] = price
+            # 🔻 fiyat düşüşü
+            elif price < old_price:
+                drop_pct = round(((price - old_price) / old_price) * 100, 1)
+                msg = (
+                    f"🔻 FİYAT DÜŞTÜ\n"
+                    f"{name}\n"
+                    f"Serial: #{c['serialNumber']}\n"
+                    f"Eski: ${old_price}\n"
+                    f"Yeni: ${price} ({drop_pct}%)\n"
+                    f"Floor: ${floor}\n"
+                    f"Floor farkı: {diff_pct:+}%"
+                )
+                send_message(msg)
+                state[card_id] = price
+                something_sent = True
 
-    save_seen(seen)
+    if not something_sent:
+        send_message(
+            f"✅ Sorare NBA checker aktif\n"
+            f"{now}\n"
+            f"📊 Bugün floor altı / yeni kart yok"
+        )
 
-# ================== ÇALIŞTIR ==================
+    save_state(state)
 
 if __name__ == "__main__":
     run()
