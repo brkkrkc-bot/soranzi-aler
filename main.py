@@ -1,131 +1,128 @@
 import os
 import json
+import time
 import requests
-from datetime import datetime
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+# ================== AYARLAR ==================
 
-HEADERS = {
-    "Content-Type": "application/json",
-    "User-Agent": "Mozilla/5.0"
-}
+SORARE_API = "https://api.sorare.com/graphql"
 
-GRAPHQL_URL = "https://api.sorare.com/graphql"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
 SEEN_FILE = "seen.json"
-STATUS_FILE = "status.json"
-PLAYERS_FILE = "players.json"
 
-# ------------------ UTILS ------------------
+CHECK_INTERVAL = 300  # 5 dakika
 
-def load_json(path, default):
-    if not os.path.exists(path):
-        return default
-    with open(path, "r") as f:
+# Takip edeceğin oyuncular (slug: isim)
+PLAYERS = {
+    "jaren-jackson-jr": "Jaren Jackson Jr",
+    "tyler-herro": "Tyler Herro",
+    "tyrese-maxey": "Tyrese Maxey",
+    "giannis-antetokounmpo": "Giannis Antetokounmpo"
+}
+
+# ================== TELEGRAM ==================
+
+def send_telegram(msg: str):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
+
+# ================== SEEN ==================
+
+def load_seen():
+    if not os.path.exists(SEEN_FILE):
+        return {}
+    with open(SEEN_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_json(path, data):
-    with open(path, "w") as f:
+def save_seen(data):
+    with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
-def send_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
-    requests.post(url, json=payload, timeout=10)
+# ================== SORARE ==================
 
-# ------------------ SORARE ------------------
-
-def fetch_market(slug):
-    query = {
-        "query": """
-        query Market($slug: String!) {
-          nbaCards(
-            first: 25
-            rarity: limited
-            season: IN_SEASON
-            playerSlug: $slug
-            orderBy: PRICE_ASC
-          ) {
-            nodes {
-              id
-              price
-              slug
-            }
+def fetch_cards(player_slug):
+    query = """
+    query PlayerCards($slug: String!) {
+      players(slugs: [$slug]) {
+        slug
+        displayName
+        cards(first: 20, rarities: [limited], orderBy: CREATED_AT_DESC) {
+          nodes {
+            id
+            name
+            rarity
+            createdAt
           }
         }
-        """,
-        "variables": {"slug": slug}
+      }
     }
+    """
 
-    r = requests.post(GRAPHQL_URL, headers=HEADERS, json=query, timeout=15)
+    r = requests.post(
+        SORARE_API,
+        json={
+            "query": query,
+            "variables": {"slug": player_slug}
+        },
+        headers={"Content-Type": "application/json"},
+        timeout=30
+    )
+
     r.raise_for_status()
-    return r.json()["data"]["nbaCards"]["nodes"]
+    j = r.json()
 
-# ------------------ MAIN ------------------
+    if "errors" in j:
+        raise Exception(j["errors"])
+
+    players = j["data"]["players"]
+    if not players:
+        return []
+
+    return players[0]["cards"]["nodes"]
+
+# ================== MAIN ==================
 
 def run():
-    seen = load_json(SEEN_FILE, {})
-    status = load_json(STATUS_FILE, {})
-    players = load_json(PLAYERS_FILE, [])
+    seen = load_seen()
 
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    send_telegram("🟢 Sorare NBA LIMITED price checker başladı")
 
-    if status.get("started") != today:
-        send_message("🟢 Sorare NBA LIMITED price checker başladı")
-        status["started"] = today
-        save_json(STATUS_FILE, status)
+    while True:
+        for slug, name in PLAYERS.items():
+            try:
+                cards = fetch_cards(slug)
 
-    for player in players:
-        slug = player["slug"]
-        name = player["name"]
+                for card in cards:
+                    cid = card["id"]
 
-        try:
-            cards = fetch_market(slug)
-        except Exception:
-            continue
+                    if cid in seen:
+                        continue
 
-        if not cards:
-            continue
-
-        floor_price = float(cards[0]["price"])
-
-        for card in cards:
-            listing_id = card["id"]
-            price = float(card["price"])
-
-            if listing_id not in seen:
-                diff = ((price - floor_price) / floor_price) * 100
-                emoji = "🟢" if diff <= 0 else "🔴"
-
-                msg = (
-                    f"{emoji} {name} (IN-SEASON)\n"
-                    f"💰 {price:.2f} $\n"
-                    f"📉 Floor: {floor_price:.2f} $\n"
-                    f"📊 Fark: {diff:+.1f}%"
-                )
-
-                send_message(msg)
-                seen[listing_id] = price
-
-            else:
-                old_price = seen[listing_id]
-                if price < old_price:
-                    diff = ((price - floor_price) / floor_price) * 100
+                    seen[cid] = {
+                        "player": name,
+                        "createdAt": card["createdAt"]
+                    }
 
                     msg = (
-                        f"🔻 {name} (IN-SEASON)\n"
-                        f"⬇️ Fiyat düştü\n"
-                        f"💰 {old_price:.2f} → {price:.2f} $\n"
-                        f"📊 Fark: {diff:+.1f}%"
+                        f"🆕 YENİ KART!\n"
+                        f"🏀 {name}\n"
+                        f"🎴 {card['rarity'].upper()}\n"
+                        f"🕒 {card['createdAt']}"
                     )
+                    send_telegram(msg)
 
-                    send_message(msg)
-                    seen[listing_id] = price
+                save_seen(seen)
 
-    save_json(SEEN_FILE, seen)
+            except Exception as e:
+                send_telegram(f"⚠️ Hata ({name}): {e}")
 
-# ------------------
+        time.sleep(CHECK_INTERVAL)
+
+# ================== ENTRY ==================
 
 if __name__ == "__main__":
     run()
