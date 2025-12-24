@@ -11,50 +11,41 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
 SEEN_FILE = "seen.json"
+STATUS_FILE = "status.json"
+PLAYERS_FILE = "players.json"
 
-CHECK_INTERVAL = 300  # 5 dakika
+CHECK_INTERVAL = 60  # saniye
+RARITY = "limited"
 
-# Takip edeceğin oyuncular (slug: isim)
-PLAYERS = {
-    "jaren-jackson-jr": "Jaren Jackson Jr",
-    "tyler-herro": "Tyler Herro",
-    "tyrese-maxey": "Tyrese Maxey",
-    "giannis-antetokounmpo": "Giannis Antetokounmpo"
-}
+# ================== YARDIMCI ==================
 
-# ================== TELEGRAM ==================
+def load_json(path, default):
+    if not os.path.exists(path):
+        return default
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def send_telegram(msg: str):
+def save_json(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+def send_telegram(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": CHAT_ID, "text": msg})
+    requests.post(url, data={"chat_id": CHAT_ID, "text": msg})
 
-# ================== SEEN ==================
+# ================== SORARE NBA ==================
 
-def load_seen():
-    if not os.path.exists(SEEN_FILE):
-        return {}
-    with open(SEEN_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_seen(data):
-    with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-# ================== SORARE ==================
-
-def fetch_cards(player_slug):
+def fetch_cards(slug):
     query = """
-    query PlayerCards($slug: String!) {
-      players(slugs: [$slug]) {
-        slug
+    query NbaPlayerCards($slug: String!) {
+      nbaPlayer(slug: $slug) {
         displayName
         cards(first: 20, rarities: [limited], orderBy: CREATED_AT_DESC) {
           nodes {
             id
             name
-            rarity
             createdAt
           }
         }
@@ -64,10 +55,7 @@ def fetch_cards(player_slug):
 
     r = requests.post(
         SORARE_API,
-        json={
-            "query": query,
-            "variables": {"slug": player_slug}
-        },
+        json={"query": query, "variables": {"slug": slug}},
         headers={"Content-Type": "application/json"},
         timeout=30
     )
@@ -78,51 +66,51 @@ def fetch_cards(player_slug):
     if "errors" in j:
         raise Exception(j["errors"])
 
-    players = j["data"]["players"]
-    if not players:
-        return []
+    player = j["data"]["nbaPlayer"]
+    if not player:
+        return None, []
 
-    return players[0]["cards"]["nodes"]
+    return player["displayName"], player["cards"]["nodes"]
 
 # ================== MAIN ==================
 
-def run():
-    seen = load_seen()
+def main():
+    players = load_json(PLAYERS_FILE, {})
+    seen = load_json(SEEN_FILE, {})
+    status = load_json(STATUS_FILE, {"started": False})
 
-    send_telegram("🟢 Sorare NBA LIMITED price checker başladı")
+    # 🔔 Sadece ilk çalışmada bildirim
+    if not status.get("started"):
+        send_telegram("🟢 Sorare NBA LIMITED price checker başladı")
+        status["started"] = True
+        save_json(STATUS_FILE, status)
 
-    while True:
-        for slug, name in PLAYERS.items():
-            try:
-                cards = fetch_cards(slug)
+    for slug, label in players.items():
+        try:
+            name, cards = fetch_cards(slug)
+            if not cards:
+                continue
 
-                for card in cards:
-                    cid = card["id"]
+            last_seen_id = seen.get(slug)
+            newest = cards[0]["id"]
 
-                    if cid in seen:
-                        continue
+            # 🆕 Yeni kart varsa
+            if last_seen_id and newest != last_seen_id:
+                send_telegram(
+                    f"🆕 Yeni {RARITY.upper()} kart!\n"
+                    f"👤 {name}\n"
+                    f"🆔 {newest}"
+                )
 
-                    seen[cid] = {
-                        "player": name,
-                        "createdAt": card["createdAt"]
-                    }
+            seen[slug] = newest
 
-                    msg = (
-                        f"🆕 YENİ KART!\n"
-                        f"🏀 {name}\n"
-                        f"🎴 {card['rarity'].upper()}\n"
-                        f"🕒 {card['createdAt']}"
-                    )
-                    send_telegram(msg)
+        except Exception as e:
+            # ⚠️ API hatası – spam yapmasın diye sadece print
+            print(f"Hata ({slug}):", e)
 
-                save_seen(seen)
+    save_json(SEEN_FILE, seen)
 
-            except Exception as e:
-                send_telegram(f"⚠️ Hata ({name}): {e}")
-
-        time.sleep(CHECK_INTERVAL)
-
-# ================== ENTRY ==================
+# ================== LOOP ==================
 
 if __name__ == "__main__":
-    run()
+    main()
