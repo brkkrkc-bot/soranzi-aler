@@ -1,12 +1,14 @@
-{
-  "players": [
-    "jaren-jackson-jr",
-    "tyler-herro",
-    "jalen-williams",
-    "jalen-johnson",
-    "paolo-banchero",
-    "devin-booker",
-    "keyonte-george",
-    "matas-buzelis"
-  ]
-}
+[
+  { "name": "Tyrese Maxey", "slug": "tyrese-maxey" },
+  { "name": "Shai Gilgeous-Alexander", "slug": "shai-gilgeous-alexander" },
+  { "name": "Giannis Antetokounmpo", "slug": "giannis-antetokounmpo" },
+  { "name": "Pascal Siakam", "slug": "pascal-siakam" },
+  { "name": "Cade Cunningham", "slug": "cade-cunningham" },
+  { "name": "Tyler Herro", "slug": "tyler-herro" },
+  { "name": "Jalen Johnson", "slug": "jalen-johnson" },
+  { "name": "Jalen Williams", "slug": "jalen-williams" },
+  { "name": "Paolo Banchero", "slug": "paolo-banchero" },
+  { "name": "Keyonte George", "slug": "keyonte-george" },
+  { "name": "Devin Booker", "slug": "devin-booker" },
+  { "name": "Matas Buzelis", "slug": "matas-buzelis" }
+]
